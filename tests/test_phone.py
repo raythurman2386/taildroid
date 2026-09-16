@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 import importlib.util
+import io
+import json
 import pathlib
+import sys
 import unittest
+from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("phone", ROOT / "phone.py")
@@ -65,6 +69,49 @@ class MaskTests(unittest.TestCase):
 
     def test_leaves_usb_serials(self):
         self.assertEqual(phone.mask_text("ABCDEF12"), "ABCDEF12")
+
+
+class PairStdinTests(unittest.TestCase):
+    def test_run_sends_stdin_not_argv(self):
+        script = "import sys\nassert '123456' not in sys.argv\nsys.stdout.write(sys.stdin.read())\n"
+        code, out, _err = phone.run([sys.executable, "-c", script], stdin_text="123456\n")
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "123456\n")
+
+    def test_pair_passes_pin_on_stdin_not_argv(self):
+        stdout = io.StringIO()
+        with patch.object(phone, "which", return_value="/usr/bin/adb"), patch.object(
+            phone,
+            "run",
+            return_value=(0, "Enter pairing code: Successfully paired to 192.168.1.4:37123", ""),
+        ) as run:
+            with patch.object(sys, "stdin", io.StringIO("123456\n")), patch.object(sys, "stdout", stdout):
+                phone.cmd_pair(["192.168.1.4:37123"])
+        run.assert_called_once()
+        args, kwargs = run.call_args
+        self.assertEqual(args[0], ["adb", "pair", "192.168.1.4:37123"])
+        self.assertNotIn("123456", args[0])
+        self.assertEqual(kwargs.get("stdin_text"), "123456\n")
+        payload = json.loads(stdout.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertNotIn("Enter pairing code", payload["message"])
+        self.assertIn("Successfully paired", payload["message"])
+        self.assertNotIn("123456", payload["message"])
+
+    def test_pair_refuses_pin_argument(self):
+        with patch.object(phone, "which", return_value="/usr/bin/adb"), patch.object(phone, "run") as run:
+            with patch.object(sys, "stdout", io.StringIO()) as stdout:
+                with self.assertRaises(SystemExit):
+                    phone.cmd_pair(["192.168.1.4:37123", "123456"])
+            run.assert_not_called()
+            self.assertNotIn("123456", stdout.getvalue())
+
+    def test_pair_requires_six_digit_stdin(self):
+        with patch.object(phone, "which", return_value="/usr/bin/adb"), patch.object(phone, "run") as run:
+            with patch.object(sys, "stdin", io.StringIO("")), patch.object(sys, "stdout", io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    phone.cmd_pair(["192.168.1.4:37123"])
+            run.assert_not_called()
 
 
 if __name__ == "__main__":

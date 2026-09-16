@@ -18,7 +18,7 @@ def which(name: str) -> str:
     return shutil.which(name) or ""
 
 
-def run(cmd: list[str], timeout: float = 6.0) -> tuple[int, str, str]:
+def run(cmd: list[str], timeout: float = 6.0, stdin_text: str | None = None) -> tuple[int, str, str]:
     try:
         proc = subprocess.run(
             cmd,
@@ -26,6 +26,7 @@ def run(cmd: list[str], timeout: float = 6.0) -> tuple[int, str, str]:
             capture_output=True,
             text=True,
             timeout=timeout,
+            input=stdin_text,
         )
         return proc.returncode, proc.stdout or "", proc.stderr or ""
     except FileNotFoundError:
@@ -265,12 +266,17 @@ def cmd_connect(argv: list[str]) -> None:
 def cmd_pair(argv: list[str]) -> None:
     if not which("adb"):
         fail("adb is not installed")
-    if len(argv) < 2:
-        fail("pair needs host:port and a six-digit code")
+    if not argv:
+        fail("pair needs host:port")
+    if len(argv) > 1:
+        fail("pair takes host:port; send the six-digit code on stdin")
     addr = require_hostport(argv[0])
-    code_value = require_code(argv[1])
-    code, out, err = run(["adb", "pair", addr, code_value], timeout=15)
+    # Pairing codes must not appear in argv; they are visible in /proc/<pid>/cmdline.
+    code_value = require_code(sys.stdin.readline())
+    code, out, err = run(["adb", "pair", addr], timeout=15, stdin_text=code_value + "\n")
     text = last_line((out or "") + "\n" + (err or ""))
+    if text.startswith("Enter pairing code:"):
+        text = text[len("Enter pairing code:") :].lstrip()
     if code != 0 or "failed" in text.lower():
         fail(text or f"adb pair {addr} failed")
     ok({"message": mask_text(text or f"Paired {addr}"), "address": addr})

@@ -45,6 +45,7 @@ Item {
   property string _actionOutput: ""
   property string _actionError: ""
   property string _pendingAction: ""
+  property string _pendingStdin: ""
   property bool _startAfterConnect: false
   property string _scrcpyError: ""
 
@@ -116,11 +117,13 @@ Item {
     statusText = statusFrom(parsed)
   }
 
-  function runAction(args, pending) {
+  function runAction(args, pending, stdinText) {
     if (actionProcess.running) return
     _actionOutput = ""
     _actionError = ""
     _pendingAction = pending || ""
+    _pendingStdin = stdinText ? String(stdinText) : ""
+    actionProcess.stdinEnabled = root._pendingStdin !== ""
     actionProcess.command = ["python3", helperPath()].concat(args)
     actionProcess.running = true
   }
@@ -151,7 +154,8 @@ Item {
       return
     }
     setAction("Pairing " + host + "…")
-    runAction(["pair", host, pin], "pair")
+    // Do not pass the PIN on argv; same-user processes can read the helper command line.
+    runAction(["pair", host], "pair", pin)
   }
 
   function disconnectDevice(serial) {
@@ -280,9 +284,22 @@ Item {
     id: actionProcess
     running: false
     command: []
+    stdinEnabled: false
     stdout: StdioCollector { id: actionStdout; waitForEnd: true; onStreamFinished: root._actionOutput = text }
     stderr: StdioCollector { id: actionStderr; waitForEnd: true; onStreamFinished: root._actionError = text }
-    onExited: function(exitCode) { root.handleActionExit(exitCode) }
+    onStarted: {
+      if (root._pendingStdin !== "") {
+        var payload = root._pendingStdin
+        if (payload.charAt(payload.length - 1) !== "\n") payload += "\n"
+        write(payload)
+        root._pendingStdin = ""
+        stdinEnabled = false
+      }
+    }
+    onExited: function(exitCode) {
+      root._pendingStdin = ""
+      root.handleActionExit(exitCode)
+    }
   }
 
   Process {
